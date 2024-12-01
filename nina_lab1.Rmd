@@ -1,0 +1,212 @@
+---
+title: "nina_lab1"
+author: "Gaston Nina Sossa"
+date: "2024-12-01"
+output: html_document
+---
+
+# Pregunta 1 (15 pts)
+
+Usando las páginas de ultracasas e infocasas armar una base de datos que contenga información disponible
+sobre la venta de casas en los departamentos de La Paz y Santa Cruz.
+La base de datos debe tener las siguientes variables:
+• Fuente: Infocasas, ultracasas
+• Departamento: La Paz, Santa Cruz
+• Precio
+• Zona
+• Superficie
+Para las variables precio, zona y superficie no es necesario tener el valor depurado. Se espera que la base de
+datos tenga al menos 10 casos por fuente y departamento.
+Se debe contar con una sola base de datos guardada en formato RData. (Suba este archivo a la plataforma)
+
+## Codigo generico para raspado web
+```{r generico}
+# Limpiamos entorno
+rm(list = ls())
+# Cargamos librerias necesarias
+library(httr)
+library(rvest) # scrapy
+library(dplyr)
+library(jsonlite)
+library(wbstats) # libreria banco mundial
+```
+
+## Sitio Infocasas
+Me di cuenta que rescata con graphql cada paginacion y arme un query solo para cada departamento e incremente el numero de items de 21 a 100, para evitar girar entre paginas
+
+```{r sitio_infocasas}}
+extraer_datos_pagina_infocasas_grapql <- function(departamento, cod_depto) {
+  # URL del endpoint GraphQL
+  url <- "https://graph.infocasas.com.uy/graphql"
+
+  # Headers necesarios para GraphQL
+  headers <- c(
+    'accept' = '*/*',
+    'accept-language' = 'en-BO,en-US;q=0.9,en;q=0.8,es;q=0.7',
+    'authorization' = '',
+    'content-type' = 'application/json',
+    'ic-user-agent' = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'origin' = 'https://www.infocasas.com.bo',
+    'referer' = 'https://www.infocasas.com.bo',
+    'user-agent' = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'x-cookiepot' = '3',
+    'x-origin' = 'www.infocasas.com.bo'
+  )
+
+  # Payload para la consulta "ResultsGird_v2"
+  payload <- list(
+    operationName = "ResultsGird_v2",
+    variables = list(
+      rows = 100, # formzamos a 100 items/elementos
+      params = list(
+        page = 1, # aqui siempre pasamos primer pagina pero como obtenemos 100 elementos no necesitamos cambiar
+        order = 2,
+        operation_type_id = 1,
+        property_type_id = list(1),
+        estate_id = cod_depto,
+        currencyID = 1,
+        m2Currency = 1
+      ),
+      page = 1,
+      source = 0
+    ),
+    query = "query ResultsGird_v2($rows: Int!, $params: SearchParamsInput!, $page: Int, $source: Int) {
+             searchFast(params: $params, first: $rows, page: $page, source: $source)
+           }"
+  )
+
+  # Realizar la solicitud HTTP por método POST
+  response <- POST(
+    url,
+    add_headers(.headers = headers),
+    body = toJSON(payload, auto_unbox = TRUE),
+    encode = "raw"
+  )
+
+  # Verificar el resultado exitoso
+  if (status_code(response) == 200) {
+    data <- content(response, "parsed") # convertimos el JSON
+    results <- data$data$searchFast$data
+    zona <- sapply(results, function(x)
+      x$neighborhood)
+    precio <- sapply(results, function(x)
+      x$price)
+    superficie <- sapply(results, function(x)
+      x$m2)
+    return(
+      data.frame(
+        fuente = "infocasas",
+        departamento,
+        precio,
+        zona,
+        superficie,
+        stringsAsFactors = FALSE
+      )
+    )
+  } else {
+    cat("Error Infocasas:", status_code(response), "\n")
+  }
+}
+# 157 = santa cruz, 154 = la paz
+infocasas_scz <- extraer_datos_pagina_infocasas_grapql("Santa Cruz", 157)
+infocasas_lp <- extraer_datos_pagina_infocasas_grapql("La Paz", 154)
+
+casas_infocasas <- bind_rows(infocasas_lp, infocasas_scz)
+```
+
+## Sitio ultracasas
+Se hace paraspado desde html DOM, 10 paginas por cada departamento por pagina tenemos 12 items
+```{r sitio_ultracasas}
+casas_ultracasas <- NULL # Inicializamos variable vacia para dataframe
+# Vector para urls
+departamentos <- c("la-paz---la-paz", "santa-cruz-de-la-sierra---santa-cruz")
+# vector para nombres
+departamentos_nombre <- c("La Paz", "Santa Cruz")
+for (index in seq_along(departamentos)) {
+  # para agregar index a for
+  departamento_url <- departamentos[index]
+  departamento <- departamentos_nombre[index]
+  for (pagina in 1:10) {
+    # 10 paginas
+    url <- paste0(
+      "https://www.ultracasas.com/buscar/casa-en-venta--en--",
+      departamento_url,
+      "?page=",
+      pagina
+    )
+    document <- read_html(url)
+    # obtenemos las variables
+    precio <- document %>% html_nodes(".inmuebles-item-precio h4") %>% html_text2()
+    zona <- document %>% html_nodes(".inmuebles-item-titular-tit h3") %>% html_text2()
+    superficie <- document %>% html_nodes(".inmuebles-item-precio li:last-child") %>% html_text2()
+    # mezclamos al dataframe
+    casas_ultracasas <- rbind(
+      casas_ultracasas,
+      data.frame(
+        fuente = "ultracasas",
+        departamento,
+        precio,
+        zona,
+        superficie,
+        stringsAsFactors = FALSE
+      )
+    )
+  }
+}
+```
+## Mezclamos los 2 dataframes de casas
+Se guarda en RData
+```{r casas}
+casas <- rbind(casas_infocasas, casas_ultracasas)
+save(casas, file = "_data/casas.RData")
+```
+
+
+# Pregunta 2 (5pt)
+Usando la API del Banco Mundial:
+• Obtenga los datos vinculados al producto interno bruto per cápita de Bolivia, Perú, Chile y Honduras, para el periodo 1970 a 2024
+```{r pregunta_2}
+# Listamos todos los indicadores
+wbindex <- wb_indicators("es")
+# Se selecciona cod="NY.GDP.PCAP.CD", "PIB per cápita (US$ a precios actuales) parece el mas adecuado"
+wb_data(
+  "NY.GDP.PCAP.CD",
+  country = c("BO", "PE", "CL", "HN"),
+  start_date = 1970,
+  end_date = 2024
+)
+```
+
+
+# Pregunta 3 (5pt)
+Usando la API del banco mundial obtenga la variación porcentual de la tasa bruta de natalidad por cada 1000 personas del 2022 respecto el 2000 para Bolivia.
+```{r pregunta_3}
+# Usamos COD=""SP.DYN.CBRT.IN", "Tasa de natalidad, bruta (por cada 1.000 personas)"
+preg3 <- wb_data(
+  "SP.DYN.CBRT.IN",
+  country = "BO",
+  start_date = 2000,
+  end_date = 2022
+)
+valor_final <- preg3$SP.DYN.CBRT.IN[preg3$date == 2022]
+valor_inicial <- preg3$SP.DYN.CBRT.IN[preg3$date == 2000]
+
+# Calculamos el valor %
+variacion_porcentual <- ((valor_final - valor_inicial) / valor_inicial) *
+  100
+paste("La variacion porcentual es:", variacion_porcentual)
+```
+
+# Pregunta 4 (5pt)
+Usando la librería rvest, obtenga todas las tablas del enlace https://anda.ine.gob.bo/index.php/catalog/107/study-description y presente el máximo número de filas que se presenta en las tablas extraídas.
+```{r pregunta_4}
+url_tabla <- "https://anda.ine.gob.bo/index.php/catalog/107/study-description"
+anda <- read_html(url_tabla)
+tablas <- html_table(anda)
+
+# nrow nos da el numero de filas con la funcion lapply y unlist lo tranforma en vector, finalmente usamos maximo
+maximo_filas <- max(unlist(lapply(tablas, nrow)))
+
+paste("Máximo numero de filas en todas las tablas es:", maximo_filas)
+```
+
