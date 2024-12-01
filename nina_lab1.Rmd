@@ -158,7 +158,7 @@ for (index in seq_along(departamentos)) {
 Se guarda en RData
 ```{r casas}
 casas <- rbind(casas_infocasas, casas_ultracasas)
-save(casas, file = "_data/casas.RData")
+save(casas, file = "_data/nina_lab1_casas.RData")
 ```
 
 
